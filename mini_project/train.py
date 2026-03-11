@@ -26,12 +26,8 @@ from stable_baselines3.common.vec_env import SubprocVecEnv
 
 from env import RacingEnv, make_racing_env
 
-UID = "000000000"  # Replace with your unique UID for submission
-NAME = "Your Agent Name"  # Replace with your agent's name
-
-assert UID != "000000000", "Please update the UID"
-if NAME == "Your Agent Name":
-    print("Consider updating the agent name from the default placeholder.")
+UID = "706605995"  # Your UID for submission
+NAME = "HO SHU HAN"  # Your agent's name
 
 
 class RacingMetricsCallback(BaseCallback):
@@ -169,7 +165,7 @@ def main():
     model.learn(
         total_timesteps=args.total_timesteps,
         callback=callbacks,
-        progress_bar=True,
+        progress_bar=False,
     )
     elapsed = time.time() - t0
 

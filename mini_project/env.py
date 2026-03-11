@@ -22,10 +22,17 @@ def still_opponent(obs, agent_id):
     return np.array([0.0, 0.0], dtype=np.float32)
 
 
+def _mixed_opponent(obs, agent_id):
+    """Curriculum: randomly sample from random, aggressive, still each step."""
+    policy = np.random.choice([random_opponent, aggressive_opponent, still_opponent])
+    return policy(obs, agent_id)
+
+
 OPPONENT_POLICIES = {
     "random": random_opponent,
     "aggressive": aggressive_opponent,
     "still": still_opponent,
+    "mixed": _mixed_opponent,
 }
 
 
@@ -116,6 +123,8 @@ class RacingEnv(gymnasium.Env):
             self.ego_id, np.zeros(self.observation_space.shape)
         )
         self._opponent_obs = {k: v for k, v in obs_dict.items() if k != self.ego_id}
+        self._last_route_completion = 0.0
+        self._step_count = 0
         ego_info = info_dict.get(self.ego_id, {})
         return self._last_ego_obs.copy(), ego_info
 
@@ -130,6 +139,7 @@ class RacingEnv(gymnasium.Env):
 
         obs, rewards, terms, truncs, infos = self.env.step(actions)
         self._opponent_obs = {k: v for k, v in obs.items() if k != self.ego_id}
+        self._step_count += 1
 
         if self.ego_id in obs:
             ego_obs = obs[self.ego_id]
@@ -142,6 +152,36 @@ class RacingEnv(gymnasium.Env):
         ego_truncated = truncs.get(self.ego_id, truncs.get("__all__", False))
         ego_info = infos.get(self.ego_id, {})
 
+        # Reward shaping (1-4, 9)
+        prev_completion = self._last_route_completion
+        curr_completion = ego_info.get("route_completion")
+        if curr_completion is None and self.ego_id in self.env.agents:
+            curr_completion = self.env.agents[self.ego_id].navigation.route_completion
+        curr_completion = curr_completion if curr_completion is not None else 0.0
+        self._last_route_completion = curr_completion
+
+        # 1. Dense route completion bonus (stronger signal for learning)
+        ego_reward += 20.0 * (curr_completion - prev_completion)
+        # 2. Survival bonus
+        ego_reward += 0.01
+        # 3. Speed bonus (normalize by max ~80 km/h)
+        speed = ego_info.get("speed_km_h")
+        if speed is None and self.ego_id in self.env.agents:
+            speed = getattr(self.env.agents[self.ego_id], "speed_km_h", 0.0)
+        speed = speed if speed is not None else 0.0
+        ego_reward += 0.04 * (speed / 80.0)
+        # 4. Arrival bonus: large fixed bonus + early-finish bonus
+        if ego_info.get("arrive_dest", False):
+            horizon = self.env.config.get("horizon", 3000)
+            early_bonus = 5.0 * (1.0 - self._step_count / horizon)
+            arrival_bonus = 50.0
+            ego_reward += arrival_bonus + max(0.0, early_bonus)
+
+        # 5. Crash/early-termination penalty (didn't finish, episode ended)
+        if (ego_terminated or ego_truncated) and curr_completion < 0.99:
+            ego_reward -= 8.0  # Stronger penalty for crash/out-of-road
+
+        ego_info["route_completion"] = curr_completion
         return ego_obs.copy(), float(ego_reward), bool(ego_terminated), bool(ego_truncated), ego_info
 
     def set_opponent_policy(self, policy):
